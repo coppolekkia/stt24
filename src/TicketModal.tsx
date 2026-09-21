@@ -1,8 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { Plus, X } from 'lucide-react';
-import { db, handleFirestoreError, OperationType } from './firebase';
+import { X } from 'lucide-react';
+import { supabase } from './supabase';
 import { useAuth } from './AuthContext';
-import { collection, addDoc, doc, updateDoc, serverTimestamp } from 'firebase/firestore';
 import { toast } from 'react-hot-toast';
 
 interface TicketModalProps {
@@ -14,10 +13,10 @@ interface TicketModalProps {
 export default function TicketModal({ isOpen, onClose, ticketToEdit }: TicketModalProps) {
   const { user } = useAuth();
   const [loading, setLoading] = useState(false);
-  
+
   const [formData, setFormData] = useState({
-    tipoEvento: '',
-    dataOra: '',
+    tipo_evento: '',
+    data_ora: '',
     risorsa: '',
     edificio: '',
     postazione: '',
@@ -30,8 +29,8 @@ export default function TicketModal({ isOpen, onClose, ticketToEdit }: TicketMod
   useEffect(() => {
     if (ticketToEdit && isOpen) {
       setFormData({
-        tipoEvento: ticketToEdit.tipoEvento || '',
-        dataOra: ticketToEdit.dataOra || '',
+        tipo_evento: ticketToEdit.tipo_evento || '',
+        data_ora: ticketToEdit.data_ora || '',
         risorsa: ticketToEdit.risorsa || '',
         edificio: ticketToEdit.edificio || '',
         postazione: ticketToEdit.postazione || '',
@@ -42,8 +41,8 @@ export default function TicketModal({ isOpen, onClose, ticketToEdit }: TicketMod
       });
     } else if (isOpen) {
       setFormData({
-        tipoEvento: '',
-        dataOra: '',
+        tipo_evento: '',
+        data_ora: '',
         risorsa: '',
         edificio: '',
         postazione: '',
@@ -64,26 +63,26 @@ export default function TicketModal({ isOpen, onClose, ticketToEdit }: TicketMod
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!user) return;
-    
+
     setLoading(true);
     try {
       if (ticketToEdit) {
-        const ticketRef = doc(db, 'tickets', ticketToEdit.id);
-        await updateDoc(ticketRef, {
-          ...formData
-        });
+        const { error } = await supabase
+          .from('tickets')
+          .update(formData)
+          .eq('id', ticketToEdit.id);
+        if (error) throw error;
         toast.success('Ticket aggiornato!');
       } else {
-        await addDoc(collection(db, 'tickets'), {
-          ...formData,
-          userId: user.uid,
-          createdAt: serverTimestamp()
-        });
+        const { error } = await supabase
+          .from('tickets')
+          .insert({ ...formData, user_id: user.id });
+        if (error) throw error;
         toast.success('Ticket aggiunto con successo!');
       }
       onClose();
-    } catch (error) {
-      handleFirestoreError(error, ticketToEdit ? OperationType.UPDATE : OperationType.CREATE, 'tickets');
+    } catch (error: any) {
+      toast.error('Errore: ' + error.message);
     } finally {
       setLoading(false);
     }
@@ -92,7 +91,6 @@ export default function TicketModal({ isOpen, onClose, ticketToEdit }: TicketMod
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
       <div className="bg-white rounded-lg shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh]">
-        {/* Modal Header */}
         <div className="px-6 py-4 flex items-center justify-between">
           <h2 className="text-xl font-bold text-gray-800">{ticketToEdit ? 'Modifica Registro' : 'Nuovo Registro Giornaliero'}</h2>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600 transition-colors">
@@ -100,11 +98,8 @@ export default function TicketModal({ isOpen, onClose, ticketToEdit }: TicketMod
           </button>
         </div>
 
-        {/* Modal Body */}
         <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto px-6 py-2 space-y-5">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-            
-            {/* Titolo e Priorità (aggiunti per edit) */}
             <div className="flex flex-col gap-1">
               <label className="text-xs font-semibold text-gray-600">Titolo</label>
               <input
@@ -128,35 +123,29 @@ export default function TicketModal({ isOpen, onClose, ticketToEdit }: TicketMod
               </select>
             </div>
 
-            {/* Tipo Evento + Add Button */}
             <div className="flex flex-col gap-1 relative">
               <label className="text-xs font-semibold text-gray-600">Tipo Evento</label>
               <div className="flex items-center gap-2">
                 <input
-                  name="tipoEvento"
-                  value={formData.tipoEvento}
+                  name="tipo_evento"
+                  value={formData.tipo_evento}
                   onChange={handleChange}
                   className="flex-1 h-10 border border-gray-300 rounded px-3 text-sm focus:outline-none focus:ring-2 focus:ring-[#3b4781] focus:border-transparent"
                 />
-                <button type="button" className="w-10 h-10 rounded-full bg-[#3b4781] text-white flex items-center justify-center hover:bg-[#2d325a] transition-colors shrink-0 shadow-sm">
-                  <Plus size={20} />
-                </button>
               </div>
             </div>
 
-            {/* Data e Ora */}
             <div className="flex flex-col gap-1">
               <label className="text-xs font-semibold text-gray-600">Data e Ora</label>
               <input
                 type="datetime-local"
-                name="dataOra"
-                value={formData.dataOra}
+                name="data_ora"
+                value={formData.data_ora}
                 onChange={handleChange}
                 className="h-10 border border-gray-300 rounded px-3 text-sm focus:outline-none focus:ring-2 focus:ring-[#3b4781] focus:border-transparent"
               />
             </div>
 
-            {/* Risorsa */}
             <div className="flex flex-col gap-1 md:col-span-2">
               <label className="text-xs font-semibold text-gray-600">Risorsa</label>
               <input
@@ -167,7 +156,6 @@ export default function TicketModal({ isOpen, onClose, ticketToEdit }: TicketMod
               />
             </div>
 
-            {/* Edificio */}
             <div className="flex flex-col gap-1">
               <label className="text-xs font-semibold text-gray-600">Edificio</label>
               <input
@@ -178,7 +166,6 @@ export default function TicketModal({ isOpen, onClose, ticketToEdit }: TicketMod
               />
             </div>
 
-            {/* Postazione */}
             <div className="flex flex-col gap-1">
               <label className="text-xs font-semibold text-gray-600">Postazione</label>
               <input
@@ -189,7 +176,6 @@ export default function TicketModal({ isOpen, onClose, ticketToEdit }: TicketMod
               />
             </div>
 
-            {/* Descrizione Evento */}
             <div className="flex flex-col gap-1 md:col-span-2">
               <label className="text-xs font-semibold text-gray-600">Descrizione Evento *</label>
               <textarea
@@ -202,7 +188,6 @@ export default function TicketModal({ isOpen, onClose, ticketToEdit }: TicketMod
               />
             </div>
 
-            {/* Note */}
             <div className="flex flex-col gap-1 md:col-span-2">
               <label className="text-xs font-semibold text-gray-600">Note</label>
               <textarea
@@ -214,10 +199,9 @@ export default function TicketModal({ isOpen, onClose, ticketToEdit }: TicketMod
               />
             </div>
           </div>
-          
-          {/* Modal Footer */}
+
           <div className="border-t border-gray-100 mt-6 pt-4 pb-2 flex justify-end gap-3 sticky bottom-0 bg-white">
-            <button 
+            <button
               type="button"
               onClick={onClose}
               disabled={loading}
@@ -225,7 +209,7 @@ export default function TicketModal({ isOpen, onClose, ticketToEdit }: TicketMod
             >
               CHIUDI
             </button>
-            <button 
+            <button
               type="submit"
               disabled={loading}
               className="px-5 py-2 text-sm font-semibold text-white bg-[#3b4781] hover:bg-[#2d325a] rounded shadow-sm transition-colors disabled:opacity-70 disabled:cursor-not-allowed flex items-center gap-2"

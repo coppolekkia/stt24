@@ -1,11 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { 
-  Home, Link, Trash2, Edit, Plus,
-  Filter, LogOut, Copy, Search, Wrench, FileText, Users, Download, Calculator, FolderOpen
-} from 'lucide-react';
+import { Hop as Home, Link, Trash2, CreditCard as Edit, Plus, LogOut, Copy, Search, Users, Download, Calculator, FolderOpen } from 'lucide-react';
 import { useAuth } from './AuthContext';
-import { logout, db, handleFirestoreError, OperationType } from './firebase';
-import { collection, onSnapshot, query, where, orderBy, addDoc, doc, deleteDoc, serverTimestamp, Timestamp } from 'firebase/firestore';
+import { supabase, signOut } from './supabase';
 import { format } from 'date-fns';
 import { it } from 'date-fns/locale';
 import TicketModal from './TicketModal';
@@ -18,15 +14,15 @@ export interface Ticket {
   id: string;
   titolo?: string;
   priorita?: string;
-  tipoEvento?: string;
-  dataOra?: string;
+  tipo_evento?: string;
+  data_ora?: string;
   risorsa?: string;
   edificio?: string;
   postazione?: string;
   descrizione: string;
   note?: string;
-  userId: string;
-  createdAt: any;
+  user_id: string;
+  created_at: string;
 }
 
 function TicketForm() {
@@ -48,15 +44,15 @@ function TicketForm() {
     if (!user || !isWriter) return;
     setLoading(true);
     try {
-      await addDoc(collection(db, 'tickets'), {
+      const { error } = await supabase.from('tickets').insert({
         ...formData,
-        userId: user.uid,
-        createdAt: serverTimestamp()
+        user_id: user.id
       });
+      if (error) throw error;
       setFormData({ titolo: '', descrizione: '', note: '', priorita: 'Bassa' });
       toast.success('Ticket aggiunto con successo!');
-    } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, 'tickets');
+    } catch (error: any) {
+      toast.error('Errore: ' + error.message);
     } finally {
       setLoading(false);
     }
@@ -101,8 +97,8 @@ function TicketForm() {
           <option value="Media">Media</option>
           <option value="Alta">Alta</option>
         </select>
-        <button 
-          type="submit" 
+        <button
+          type="submit"
           disabled={loading}
           className="h-10 px-4 bg-[#3b4781] text-white rounded text-sm font-semibold hover:bg-[#2d325a] transition-colors shadow-sm disabled:opacity-50 whitespace-nowrap"
         >
@@ -123,29 +119,38 @@ function TicketList({ onOpenModal }: TicketListProps) {
   const [priorityFilter, setPriorityFilter] = useState('Tutte');
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedTickets, setSelectedTickets] = useState<Set<string>>(new Set());
-
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
   useEffect(() => {
     if (!user) return;
 
-    const q = query(
-      collection(db, 'tickets'),
-      orderBy('createdAt', 'desc')
-    );
+    const channel = supabase
+      .channel('tickets-changes')
+      .on('postgres_changes',
+        { event: '*', schema: 'public', table: 'tickets' },
+        () => { fetchTickets(); }
+      )
+      .subscribe();
 
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const fetchedTickets: Ticket[] = [];
-      snapshot.forEach((doc) => {
-        fetchedTickets.push({ id: doc.id, ...doc.data() } as Ticket);
-      });
-      setTickets(fetchedTickets);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, 'tickets');
-    });
+    fetchTickets();
 
-    return () => unsubscribe();
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [user]);
+
+  const fetchTickets = async () => {
+    const { data, error } = await supabase
+      .from('tickets')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      toast.error('Errore caricamento ticket: ' + error.message);
+      return;
+    }
+    setTickets(data as Ticket[]);
+  };
 
   const toggleSelection = (ticketId: string) => {
     const newSelection = new Set(selectedTickets);
@@ -169,15 +174,16 @@ function TicketList({ onOpenModal }: TicketListProps) {
     if (selectedTickets.size === 0) return;
 
     try {
-      const deletePromises = Array.from(selectedTickets).map((id: string) => 
-        deleteDoc(doc(db, 'tickets', id))
-      );
-      await Promise.all(deletePromises);
+      const { error } = await supabase
+        .from('tickets')
+        .delete()
+        .in('id', Array.from(selectedTickets));
+      if (error) throw error;
       setSelectedTickets(new Set());
       setShowDeleteConfirm(false);
       toast.success('Ticket eliminato con successo!');
-    } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, 'tickets');
+    } catch (error: any) {
+      toast.error('Errore eliminazione: ' + error.message);
     }
   };
 
@@ -200,11 +206,9 @@ function TicketList({ onOpenModal }: TicketListProps) {
     const ticketId = Array.from(selectedTickets)[0];
     const ticket = tickets.find(t => t.id === ticketId);
     if (ticket) {
-      const details = `Ticket: ${ticket.titolo || ticket.tipoEvento || 'N/A'}\nDescrizione: ${ticket.descrizione}\nPriorità: ${ticket.priorita || 'Bassa'}`;
+      const details = `Ticket: ${ticket.titolo || ticket.tipo_evento || 'N/A'}\nDescrizione: ${ticket.descrizione}\nPriorità: ${ticket.priorita || 'Bassa'}`;
       navigator.clipboard.writeText(details)
-        .then(() => {
-          toast.success('Copiato negli appunti!');
-        })
+        .then(() => toast.success('Copiato negli appunti!'))
         .catch(() => toast.error('Errore durante la copia.'));
     }
   };
@@ -214,23 +218,23 @@ function TicketList({ onOpenModal }: TicketListProps) {
       toast.error('Nessun ticket da esportare');
       return;
     }
-    
+
     const headers = ['ID', 'Data', 'Titolo', 'Tipo Evento', 'Priorità', 'Risorsa', 'Edificio', 'Postazione', 'Descrizione', 'Note', 'Creato Da'];
     const csvRows = [headers.join(',')];
 
     filteredTickets.forEach(ticket => {
       const row = [
         `"${ticket.id}"`,
-        `"${ticket.dataOra || ''}"`,
+        `"${ticket.data_ora || ''}"`,
         `"${(ticket.titolo || '').replace(/"/g, '""')}"`,
-        `"${(ticket.tipoEvento || '').replace(/"/g, '""')}"`,
+        `"${(ticket.tipo_evento || '').replace(/"/g, '""')}"`,
         `"${ticket.priorita || ''}"`,
         `"${(ticket.risorsa || '').replace(/"/g, '""')}"`,
         `"${(ticket.edificio || '').replace(/"/g, '""')}"`,
         `"${(ticket.postazione || '').replace(/"/g, '""')}"`,
         `"${(ticket.descrizione || '').replace(/"/g, '""')}"`,
         `"${(ticket.note || '').replace(/"/g, '""')}"`,
-        `"${ticket.userId}"`
+        `"${ticket.user_id}"`
       ];
       csvRows.push(row.join(','));
     });
@@ -244,7 +248,7 @@ function TicketList({ onOpenModal }: TicketListProps) {
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
-    
+
     toast.success('Esportazione completata!');
   };
 
@@ -256,7 +260,7 @@ function TicketList({ onOpenModal }: TicketListProps) {
 
     if (searchTerm.trim() !== '') {
       const term = searchTerm.toLowerCase();
-      const titleMatch = (t.titolo || '').toLowerCase().includes(term) || (t.tipoEvento || '').toLowerCase().includes(term);
+      const titleMatch = (t.titolo || '').toLowerCase().includes(term) || (t.tipo_evento || '').toLowerCase().includes(term);
       const descMatch = (t.descrizione || '').toLowerCase().includes(term);
       if (!titleMatch && !descMatch) return false;
     }
@@ -264,15 +268,13 @@ function TicketList({ onOpenModal }: TicketListProps) {
     return true;
   });
 
-  // Calculate if the user can modify the selected items
   const canModifySelected = Array.from(selectedTickets).every(id => {
     const ticket = tickets.find(t => t.id === id);
-    return ticket && (ticket.userId === user?.uid || isAdmin);
+    return ticket && (ticket.user_id === user?.id || isAdmin);
   });
 
   return (
     <div className="bg-white shadow-sm border border-gray-200 flex-1 flex flex-col min-h-0 mx-4 mb-4 rounded-md">
-      {/* Header & Toolbar */}
       <div className="border-b border-gray-200">
         <div className="flex items-center justify-between px-4 py-3 bg-gray-50 border-b border-gray-200">
           <div className="flex items-center">
@@ -292,7 +294,7 @@ function TicketList({ onOpenModal }: TicketListProps) {
         <div className="px-4 py-2 flex justify-between items-center bg-gray-50/50 flex-wrap gap-4">
           <div className="flex gap-2">
             {isWriter && (
-              <button 
+              <button
                 onClick={() => onOpenModal()}
                 className="w-10 h-10 rounded-full bg-[#3b4781] text-white flex items-center justify-center hover:bg-[#2d325a] transition-colors shadow-sm"
                 title="Nuovo Registro (Esteso)"
@@ -301,7 +303,7 @@ function TicketList({ onOpenModal }: TicketListProps) {
               </button>
             )}
             {isWriter && (
-              <button 
+              <button
                 onClick={handleEdit}
                 disabled={selectedTickets.size !== 1 || !canModifySelected}
                 className={`w-10 h-10 rounded-full text-white flex items-center justify-center transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed ${(selectedTickets.size === 1 && canModifySelected) ? 'bg-[#3b4781] hover:bg-[#2d325a]' : 'bg-gray-400'}`}
@@ -311,7 +313,7 @@ function TicketList({ onOpenModal }: TicketListProps) {
               </button>
             )}
             {isWriter && (
-              <button 
+              <button
                 onClick={handleDelete}
                 disabled={selectedTickets.size === 0 || !canModifySelected}
                 className={`w-10 h-10 rounded-full text-white flex items-center justify-center transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed ${(selectedTickets.size > 0 && canModifySelected) ? 'bg-red-500 hover:bg-red-600' : 'bg-gray-400'}`}
@@ -320,7 +322,7 @@ function TicketList({ onOpenModal }: TicketListProps) {
                 <Trash2 size={18} />
               </button>
             )}
-            <button 
+            <button
               onClick={handleCopyLink}
               disabled={selectedTickets.size !== 1}
               className={`w-10 h-10 rounded-full text-white flex items-center justify-center transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed ${selectedTickets.size === 1 ? 'bg-[#3b4781] hover:bg-[#2d325a]' : 'bg-gray-400'}`}
@@ -332,7 +334,7 @@ function TicketList({ onOpenModal }: TicketListProps) {
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-2">
               <span className="text-sm text-gray-500 font-medium hidden sm:inline">Filtra:</span>
-              <select 
+              <select
                 value={priorityFilter}
                 onChange={(e) => setPriorityFilter(e.target.value)}
                 className="h-9 border border-gray-300 rounded px-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#3b4781] bg-white text-gray-700"
@@ -344,7 +346,7 @@ function TicketList({ onOpenModal }: TicketListProps) {
               </select>
             </div>
             {isAdmin && (
-              <button 
+              <button
                 onClick={handleExportCSV}
                 className="w-10 h-10 rounded-full bg-[#3b4781] text-white flex items-center justify-center hover:bg-[#2d325a] transition-colors shadow-sm"
                 title="Esporta CSV"
@@ -356,14 +358,13 @@ function TicketList({ onOpenModal }: TicketListProps) {
         </div>
       </div>
 
-      {/* Table */}
       <div className="flex-1 overflow-auto bg-gray-50">
         <table className="w-full min-w-[800px] border-collapse text-sm text-left">
           <thead className="bg-gray-200/50 text-gray-500 sticky top-0 z-10">
             <tr>
               <th className="px-4 py-3 font-medium border-b border-r border-gray-300 w-12 text-center">
-                <input 
-                  type="checkbox" 
+                <input
+                  type="checkbox"
                   className="rounded border-gray-300 text-[#3b4781] focus:ring-[#3b4781]"
                   checked={filteredTickets.length > 0 && selectedTickets.size === filteredTickets.length}
                   onChange={toggleAllSelection}
@@ -375,7 +376,7 @@ function TicketList({ onOpenModal }: TicketListProps) {
               <th className="px-4 py-3 font-medium border-b border-r border-gray-300">Note</th>
               <th className="px-4 py-3 font-medium border-b border-r border-gray-300">Data Evento</th>
               <th className="px-4 py-3 font-medium border-b border-r border-gray-300">Edificio</th>
-              <th className="px-4 py-3 font-medium border-b border-gray-300">Postazione</th>
+              <th className="px-4 py-3 font-medium border-b border-r border-gray-300">Postazione</th>
             </tr>
           </thead>
           <tbody className="bg-white">
@@ -386,23 +387,23 @@ function TicketList({ onOpenModal }: TicketListProps) {
                 </td>
               </tr>
             ) : (
-              filteredTickets.map((ticket, idx) => (
+              filteredTickets.map((ticket) => (
                 <tr key={ticket.id} className={`border-b border-gray-100 hover:bg-gray-50 transition-colors ${selectedTickets.has(ticket.id) ? 'bg-blue-50/50' : ''}`}>
                   <td className="px-4 py-3 border-r border-gray-100 text-center">
-                     <input 
-                       type="checkbox" 
-                       className="rounded border-gray-300 text-[#3b4781] focus:ring-[#3b4781]" 
-                       checked={selectedTickets.has(ticket.id)}
-                       onChange={() => toggleSelection(ticket.id)}
-                     />
+                    <input
+                      type="checkbox"
+                      className="rounded border-gray-300 text-[#3b4781] focus:ring-[#3b4781]"
+                      checked={selectedTickets.has(ticket.id)}
+                      onChange={() => toggleSelection(ticket.id)}
+                    />
                   </td>
                   <td className="px-4 py-3 border-r border-gray-100 text-gray-700">
-                    {ticket.titolo || ticket.tipoEvento ? (
+                    {ticket.titolo || ticket.tipo_evento ? (
                       <div className="flex items-center gap-2">
-                        <span className="font-medium text-[#2d325a]">{ticket.titolo || ticket.tipoEvento}</span>
+                        <span className="font-medium text-[#2d325a]">{ticket.titolo || ticket.tipo_evento}</span>
                         <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase whitespace-nowrap ${
-                          ticket.priorita === 'Alta' ? 'bg-red-100 text-red-700' : 
-                          ticket.priorita === 'Media' ? 'bg-orange-100 text-orange-700' : 
+                          ticket.priorita === 'Alta' ? 'bg-red-100 text-red-700' :
+                          ticket.priorita === 'Media' ? 'bg-orange-100 text-orange-700' :
                           'bg-green-100 text-green-700'
                         }`}>{ticket.priorita || 'Bassa'}</span>
                       </div>
@@ -414,7 +415,7 @@ function TicketList({ onOpenModal }: TicketListProps) {
                   <td className="px-4 py-3 border-r border-gray-100 text-gray-700">{ticket.descrizione}</td>
                   <td className="px-4 py-3 border-r border-gray-100 text-gray-500 truncate max-w-[150px]" title={ticket.note || ''}>{ticket.note || '-'}</td>
                   <td className="px-4 py-3 border-r border-gray-100 text-gray-700 whitespace-nowrap">
-                    {ticket.dataOra ? format(new Date(ticket.dataOra), 'dd/MM/yyyy HH:mm', { locale: it }) : '-'}
+                    {ticket.data_ora ? format(new Date(ticket.data_ora), 'dd/MM/yyyy HH:mm', { locale: it }) : '-'}
                   </td>
                   <td className="px-4 py-3 border-r border-gray-100 text-gray-700">{ticket.edificio || '-'}</td>
                   <td className="px-4 py-3 text-gray-700">{ticket.postazione || '-'}</td>
@@ -424,8 +425,7 @@ function TicketList({ onOpenModal }: TicketListProps) {
           </tbody>
         </table>
       </div>
-      
-      {/* Footer Pagination */}
+
       <div className="border-t border-gray-200 px-4 py-2 flex items-center justify-end text-xs text-gray-500 bg-gray-50">
         <span className="mr-4">Selezionati: {selectedTickets.size}</span>
         <span className="mr-4">Elementi: {filteredTickets.length}</span>
@@ -438,7 +438,6 @@ function TicketList({ onOpenModal }: TicketListProps) {
         </div>
       </div>
 
-      {/* Modals & Notifications */}
       {showDeleteConfirm && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
           <div className="bg-white rounded-lg shadow-xl max-w-sm w-full p-6 flex flex-col items-center text-center">
@@ -482,29 +481,28 @@ export default function Dashboard() {
 
   return (
     <div className="flex h-screen w-full bg-gray-100 overflow-hidden font-sans">
-      {/* Sidebar */}
       <div className="w-16 bg-[#2d325a] flex flex-col items-center py-4 flex-shrink-0 z-20">
         <div className="w-10 h-10 bg-white/10 rounded-full flex items-center justify-center mb-6 text-white text-xs font-bold uppercase">
           Stt24
         </div>
         <nav className="flex flex-col gap-6 text-gray-300 w-full">
-          <button 
+          <button
             onClick={() => setCurrentView('home')}
-            className={`flex justify-center transition-colors ${currentView === 'home' ? 'text-white' : 'hover:text-white'}`} 
+            className={`flex justify-center transition-colors ${currentView === 'home' ? 'text-white' : 'hover:text-white'}`}
             title="Home"
           >
             <Home size={20} />
           </button>
-          <button 
+          <button
             onClick={() => setCurrentView('fatturazione')}
-            className={`flex justify-center transition-colors ${currentView === 'fatturazione' ? 'text-white' : 'hover:text-white'}`} 
+            className={`flex justify-center transition-colors ${currentView === 'fatturazione' ? 'text-white' : 'hover:text-white'}`}
             title="Fatturazione e Spese"
           >
             <Calculator size={20} />
           </button>
-          <button 
+          <button
             onClick={() => setCurrentView('archiviazione')}
-            className={`flex justify-center transition-colors ${currentView === 'archiviazione' ? 'text-white' : 'hover:text-white'}`} 
+            className={`flex justify-center transition-colors ${currentView === 'archiviazione' ? 'text-white' : 'hover:text-white'}`}
             title="Archivio Documenti"
           >
             <FolderOpen size={20} />
@@ -512,9 +510,7 @@ export default function Dashboard() {
         </nav>
       </div>
 
-      {/* Main Content */}
       <div className="flex-1 flex flex-col h-full overflow-hidden">
-        {/* Top Navbar */}
         <header className="h-14 bg-[#2d325a] flex items-center justify-between px-4 text-white shadow-md z-10 flex-shrink-0">
           <div className="flex items-center gap-3">
             <span className="font-semibold tracking-wide text-sm">Stt24 Web Container</span>
@@ -524,21 +520,20 @@ export default function Dashboard() {
               {user?.email}
             </div>
             {isAdmin && (
-              <button 
+              <button
                 onClick={() => setIsRoleManagerOpen(true)}
-                className="hover:text-blue-300 transition-colors" 
+                className="hover:text-blue-300 transition-colors"
                 title="Gestione Utenti"
               >
                 <Users size={18} />
               </button>
             )}
-            <button onClick={logout} className="hover:text-red-300 transition-colors" title="Logout">
+            <button onClick={signOut} className="hover:text-red-300 transition-colors" title="Logout">
               <LogOut size={18} />
             </button>
           </div>
         </header>
 
-        {/* Dashboard Area */}
         <main className="flex-1 overflow-auto bg-gray-100 relative flex flex-col">
           {!isViewer ? (
             <div className="flex flex-col items-center justify-center h-full text-center p-8 text-gray-500">
@@ -561,10 +556,9 @@ export default function Dashboard() {
         </main>
       </div>
 
-      {/* Ticket Modal */}
-      <TicketModal 
-        isOpen={isModalOpen} 
-        onClose={() => setIsModalOpen(false)} 
+      <TicketModal
+        isOpen={isModalOpen}
+        onClose={() => setIsModalOpen(false)}
         ticketToEdit={ticketToEdit}
       />
 

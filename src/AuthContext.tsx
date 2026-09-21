@@ -1,7 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
-import { User, onAuthStateChanged } from 'firebase/auth';
-import { doc, onSnapshot } from 'firebase/firestore';
-import { auth, db } from './firebase';
+import { User } from '@supabase/supabase-js';
+import { supabase } from './supabase';
 
 interface AuthContextType {
   user: User | null;
@@ -12,11 +11,11 @@ interface AuthContextType {
   isViewer: boolean;
 }
 
-const AuthContext = createContext<AuthContextType>({ 
-  user: null, 
-  loading: true, 
-  role: 'none', 
-  isAdmin: false, 
+const AuthContext = createContext<AuthContextType>({
+  user: null,
+  loading: true,
+  role: 'none',
+  isAdmin: false,
   isWriter: false,
   isViewer: false
 });
@@ -27,29 +26,49 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [role, setRole] = useState<'admin' | 'writer' | 'viewer' | 'none'>('none');
 
   useEffect(() => {
-    let unsubscribeRole: (() => void) | undefined;
+    let roleChannel: ReturnType<typeof supabase.channel> | null = null;
 
-    const unsubscribeAuth = onAuthStateChanged(auth, (currentUser) => {
-      setUser(currentUser);
-      
-      if (unsubscribeRole) {
-        unsubscribeRole();
+    const fetchRole = async (uid: string) => {
+      const { data, error } = await supabase
+        .from('roles')
+        .select('role')
+        .eq('user_id', uid)
+        .maybeSingle();
+
+      if (error) {
+        console.error('Error fetching role:', error);
+        setRole('none');
+      } else {
+        setRole(data?.role as any ?? 'none');
+      }
+      setLoading(false);
+    };
+
+    const { data: authListener } = supabase.auth.onAuthStateChange((event, session) => {
+      setUser(session?.user ?? null);
+
+      if (roleChannel) {
+        supabase.removeChannel(roleChannel);
+        roleChannel = null;
       }
 
-      if (currentUser) {
-        // Fetch role
-        unsubscribeRole = onSnapshot(doc(db, 'roles', currentUser.uid), (docSnap) => {
-          if (docSnap.exists()) {
-            setRole(docSnap.data().role as any);
-          } else {
-            setRole('none');
-          }
-          setLoading(false);
-        }, (error) => {
-          console.error("Error fetching role:", error);
-          setRole('none');
-          setLoading(false);
-        });
+      if (session?.user) {
+        const uid = session.user.id;
+        fetchRole(uid);
+
+        roleChannel = supabase
+          .channel(`roles:${uid}`)
+          .on('postgres_changes',
+            { event: '*', schema: 'public', table: 'roles', filter: `user_id=eq.${uid}` },
+            (payload: any) => {
+              if (payload.eventType === 'DELETE') {
+                setRole('none');
+              } else {
+                setRole(payload.new?.role ?? 'none');
+              }
+            }
+          )
+          .subscribe();
       } else {
         setRole('none');
         setLoading(false);
@@ -57,12 +76,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     });
 
     return () => {
-      unsubscribeAuth();
-      if (unsubscribeRole) unsubscribeRole();
+      authListener.subscription.unsubscribe();
+      if (roleChannel) supabase.removeChannel(roleChannel);
     };
   }, []);
 
-  const isAdmin = user?.email === 'coppolek@gmail.com' || role === 'admin';
+  const isAdmin = role === 'admin';
   const isWriter = isAdmin || role === 'writer';
   const isViewer = isWriter || role === 'viewer';
 
