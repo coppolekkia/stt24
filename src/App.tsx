@@ -20,7 +20,8 @@ function AppContent() {
       const loginEmail = email.includes('@') ? email : `${email}@stt24.app`;
       await signInWithEmail(loginEmail, password);
     } catch (error: any) {
-      toast.error('Errore di accesso: credenziali non valide.');
+      const msg = error?.message || 'Credenziali non valide.';
+      toast.error('Errore di accesso: ' + msg);
       setIsLoggingIn(false);
     }
   };
